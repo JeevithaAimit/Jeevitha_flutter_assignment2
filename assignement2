@@ -1,0 +1,128 @@
+!pip install yt-dlp opencv-python-headless gradio
+
+import gradio as gr
+import os
+import cv2
+import subprocess
+
+# ---------------------------
+# Download with yt-dlp
+# ---------------------------
+def download_youtube(url, output_path="Raw_video/train_video.mp4"):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    try:
+        cmd = ["yt-dlp", "-f", "mp4", "-o", output_path, url]
+        subprocess.run(cmd, check=True)
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+        else:
+            return None
+    except Exception as e:
+        print("Download error:", e)
+        return None
+
+# ---------------------------
+# Split into clips
+# ---------------------------
+def split_and_extract(video_path, train_number="12309", output_folder="Processed_Video", coach_threshold=300):
+    os.makedirs(output_folder, exist_ok=True)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return [], "❌ Could not open video."
+
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Video FPS: {fps}, Total Frames: {total_frames}")
+
+    if total_frames == 0:
+        return [], "❌ Video has 0 frames."
+
+    # Auto-adjust threshold if larger than video length
+    if coach_threshold >= total_frames:
+        coach_threshold = max(1, total_frames // 2)
+        print(f"⚠️ Threshold too high, adjusted to {coach_threshold}")
+
+    frame_num, coach_count = 0, 0
+    frames, clips = [], []
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frames.append(frame)
+        frame_num += 1
+
+        # Save a segment when threshold reached
+        if len(frames) >= coach_threshold:
+            coach_count += 1
+            h, w, _ = frames[0].shape
+            clip_path = os.path.join(output_folder, f"{train_number}_coach_{coach_count}.mp4")
+
+            out = cv2.VideoWriter(clip_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+            for f in frames:
+                out.write(f)
+            out.release()
+
+            clips.append(clip_path)
+            frames = []  # reset
+
+    # 🔑 Save leftover frames as final clip
+    if frames:
+        coach_count += 1
+        h, w, _ = frames[0].shape
+        clip_path = os.path.join(output_folder, f"{train_number}_coach_{coach_count}.mp4")
+
+        out = cv2.VideoWriter(clip_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        for f in frames:
+            out.write(f)
+        out.release()
+
+        clips.append(clip_path)
+
+    cap.release()
+    return clips, f"✅ Created {len(clips)} clips from {total_frames} frames."
+
+# ---------------------------
+# Main Gradio function
+# ---------------------------
+def process_video(url, threshold):
+    if not url:
+        return "❌ Please enter a YouTube URL", None
+    if not ("youtube.com" in url or "youtu.be" in url):
+        return "❌ Invalid URL. Please enter a valid YouTube link.", None
+
+    video_path = "Raw_video/train_video.mp4"
+    downloaded = download_youtube(url, video_path)
+    if not downloaded:
+        return "❌ Error downloading video.", None
+
+    clips, status = split_and_extract(video_path, train_number="12309", coach_threshold=threshold)
+    if not clips:
+        return status, None
+
+    return status, clips
+
+# ---------------------------
+# Gradio UI
+# ---------------------------
+with gr.Blocks() as demo:
+    gr.Markdown("## 🚆 Train Video Processing")
+    gr.Markdown("Paste a YouTube URL and click **Process Video**.")
+
+    url_input = gr.Textbox(label="YouTube URL", placeholder="Paste YouTube link here...")
+    threshold_slider = gr.Slider(50, 1000, value=300, step=50, label="Frames per coach")
+    process_btn = gr.Button("Process Video")
+
+    output_text = gr.Textbox(label="Status")
+    output_videos = gr.File(
+        label="Processed Clips",
+        file_types=[".mp4"],
+        type="filepath",
+        file_count="multiple"
+    )
+
+    process_btn.click(process_video, inputs=[url_input, threshold_slider], outputs=[output_text, output_videos])
+
+demo.launch()
